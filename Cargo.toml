@@ -1,6 +1,6 @@
 [package]
 name = "liuxi-village"
-version = "1.1.12"
+version = "1.1.13"
 edition = "2024"
 license = "MIT"
 
@@ -16,6 +16,7 @@ semver = { version = "1.0", features = ["serde"] }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
     "Win32_System_LibraryLoader",
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",

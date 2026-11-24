@@ -17,6 +17,7 @@ mod home_host;
 mod living_menu;
 mod license_view;
 mod native_metrics;
+mod desktop_layer;
 
 use std::{
     cell::RefCell,
@@ -391,6 +392,7 @@ struct App {
     user_hidden: bool,
     preview: bool,
     foreground: HWND,
+    layer_checked: Instant,
     metrics: Option<native_metrics::NativeMetrics>,
 }
 
@@ -560,40 +562,27 @@ impl App {
         if self.user_hidden {
             return;
         }
-        let foreground = unsafe { GetForegroundWindow() };
-        if !needs_show && foreground == self.foreground {
-            // Desktop organizers may raise their fences just after Show Desktop.
-            if !self.preview && is_topmost(hwnd) && desktop_overlap_above(hwnd) {
-                show_home_window(hwnd, HWND_TOPMOST);
+        if self.preview {
+            if needs_show {
+                unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
             }
             return;
         }
-        self.foreground = foreground;
-        // Show Desktop can stack the shell above every ordinary window.
-        if !self.preview && desktop_foreground(foreground) {
-            show_home_window(hwnd, HWND_TOPMOST);
-        } else if needs_show || is_topmost(hwnd) {
-            if is_topmost(hwnd) {
-                show_home_window(hwnd, HWND_NOTOPMOST);
-            }
-            let after = if foreground.is_null() || foreground == hwnd || is_topmost(foreground) {
-                HWND_TOP
-            } else {
-                foreground
-            };
-            show_home_window(hwnd, after);
+        let foreground = unsafe { GetForegroundWindow() };
+        if !needs_show && foreground == self.foreground
+            && self.layer_checked.elapsed() < Duration::from_millis(500)
+        {
+            return;
         }
+        self.foreground = foreground;
+        self.layer_checked = Instant::now();
+        desktop_layer::place(hwnd, needs_show);
     }
 
     fn reveal(&mut self, hwnd: HWND) {
         self.user_hidden = false;
         self.refresh(hwnd);
-        let after = if is_topmost(hwnd) {
-            HWND_TOPMOST
-        } else {
-            HWND_TOP
-        };
-        show_home_window(hwnd, after);
+        self.place_home(hwnd, true);
     }
 
     fn tick(&mut self, hwnd: HWND) {
@@ -832,66 +821,6 @@ fn with_app(run: impl FnOnce(&mut App)) {
 fn cursor() -> Option<POINT> {
     let mut point = POINT { x: 0, y: 0 };
     (unsafe { GetCursorPos(&mut point) } != 0).then_some(point)
-}
-
-fn show_home_window(hwnd: HWND, after: HWND) {
-    let flags = SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE;
-    unsafe {
-        if SetWindowPos(hwnd, after, 0, 0, 0, 0, flags) == 0 {
-            SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, flags);
-        }
-    }
-}
-
-fn is_topmost(hwnd: HWND) -> bool {
-    (unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST) != 0
-}
-
-fn desktop_overlap_above(hwnd: HWND) -> bool {
-    let mut home: RECT = unsafe { mem::zeroed() };
-    if unsafe { GetWindowRect(hwnd, &mut home) } == 0 {
-        return false;
-    }
-    let mut above = unsafe { GetWindow(hwnd, GW_HWNDPREV) };
-    for _ in 0..64 {
-        if above.is_null() {
-            break;
-        }
-        let mut rect: RECT = unsafe { mem::zeroed() };
-        if unsafe { IsWindowVisible(above) } != 0
-            && unsafe { GetWindowRect(above, &mut rect) } != 0
-            && rect.left < home.right
-            && rect.right > home.left
-            && rect.top < home.bottom
-            && rect.bottom > home.top
-            && desktop_foreground(above)
-        {
-            return true;
-        }
-        above = unsafe { GetWindow(above, GW_HWNDPREV) };
-    }
-    false
-}
-
-fn desktop_foreground(foreground: HWND) -> bool {
-    if foreground.is_null() {
-        return false;
-    }
-    if foreground == unsafe { GetShellWindow() } {
-        return true;
-    }
-    let mut class = [0u16; 96];
-    let len = unsafe { GetClassNameW(foreground, class.as_mut_ptr(), class.len() as i32) };
-    if len <= 0 {
-        return false;
-    }
-    let name = &class[..len as usize];
-    ["Progman", "WorkerW", "SHELLDLL_DefView", "SysListView32"]
-        .into_iter()
-        .any(|known| name.iter().copied().eq(known.encode_utf16()))
-        || name
-            .get(.."PecoFence".len())
-            .is_some_and(|start| start.iter().copied().eq("PecoFence".encode_utf16()))
 }
 
 fn monitor_area(point: POINT) -> Option<RECT> {
@@ -1642,6 +1571,7 @@ fn run() -> io::Result<()> {
             user_hidden: false,
             preview,
             foreground: ptr::null_mut(),
+            layer_checked: Instant::now(),
             metrics: measure_seconds.map(native_metrics::NativeMetrics::new).transpose()?,
         };
         app.unlock_visible_plots();
