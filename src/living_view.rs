@@ -836,7 +836,7 @@ impl LivingView {
                 }
                 Drawable::Plugin(command) => {
                     if let Some(store) = store {
-                        self.plugin(command, cx, cy, store)
+                        self.plugin(command, cx, cy, store, world)
                     }
                 }
             }
@@ -2465,13 +2465,67 @@ impl LivingView {
         let dy = scale.apply(y) - scale.apply(frame.anchor[1]);
         Some((feet.0 * 2 + if flip { -dx } else { dx }, feet.1 * 2 + dy))
     }
-    fn plugin(&mut self, c: &FrameCommand, cx: i32, cy: i32, store: &PluginStore) {
+    pub fn plugin_actor_hand(
+        &self,
+        world: &LivingWorld,
+        kind: ActorKind,
+        frame: Option<&LocalId>,
+    ) -> Option<Point> {
+        let actor = world.actors().get(kind as usize)?;
+        if kind == ActorKind::Orange || !world.is_village() {
+            return None;
+        }
+        let (action, phase) = if let Some(frame) = frame {
+            basketball_actor_clip(frame.as_str())?
+        } else {
+            let phase = actor.walking_progress(world.world_ms()).map_or(
+                (world.world_ms() / 8_000 % 3) as usize,
+                |progress| ((progress * 3.0).floor() as usize).min(2),
+            );
+            (village_actor_clip(actor), phase)
+        };
+        let role = if kind == ActorKind::Xiaohe { "female" } else { "male" };
+        let key = format!("{role}_{action}_{phase}");
+        if !self.premium_frame_exists(&key) {
+            return None;
+        }
+        let hand = self.premium_hand_at_scale(
+            &key,
+            (actor.position.x.round() as i32, actor.position.y.round() as i32),
+            actor.facing_left,
+            Scale::new(3, 4),
+        ).unwrap_or((
+            (actor.position.x.round() as i32 + if actor.facing_left { -4 } else { 4 }) * 2,
+            (actor.position.y.round() as i32 - 8) * 2,
+        ));
+        Some(Point { x: hand.0 as f32 / 2.0, y: hand.1 as f32 / 2.0 })
+    }
+
+    fn plugin(
+        &mut self, c: &FrameCommand, cx: i32, cy: i32,
+        store: &PluginStore, world: &LivingWorld,
+    ) {
         let Some(pack) = store.package(&c.pack_id) else {
             return;
         };
         let Some(frame) = pack.pack.frame(&c.frame_id).cloned() else {
             return;
         };
+        if world.is_village() && c.pack_id.as_str() == "org.cat-home.community.basketball"
+            && let Some(kind @ (ActorKind::Xiaohe | ActorKind::Ayu)) = c.actor_override
+            && let Some((action, phase)) = basketball_actor_clip(c.frame_id.as_str())
+        {
+            let actor = &world.actors()[kind as usize];
+            let role = if kind == ActorKind::Xiaohe { "female" } else { "male" };
+            let position = (c.point.x.round() as i32 - cx, c.point.y.round() as i32 - cy);
+            self.contact_shadow((position.0 + 1, position.1), (5, 2), 36);
+            if self.premium_actor_body(
+                role, action, &format!("{role}_{action}_{phase}"), position, c.flip,
+                Scale::new(3, 4), clothing_palette(kind, actor.outfit()),
+            ) {
+                return;
+            }
+        }
         let position = (c.point.x.round() as i32 - cx, c.point.y.round() as i32 - cy);
         let sprite = Sprite::new(frame.rect, frame.anchor, position, c.flip, Scale::IDENTITY)
             .at_density(self.density);
@@ -2933,6 +2987,21 @@ fn village_actor_clip(actor: &Actor) -> &'static str {
         },
         _ => actor_clip(actor),
     }
+}
+
+fn basketball_actor_clip(frame: &str) -> Option<(&'static str, usize)> {
+    let frame = frame.strip_suffix("_alt").unwrap_or(frame);
+    let (action, phase) = frame.rsplit_once('_')?;
+    let phase = phase.parse::<usize>().ok().filter(|phase| *phase < 3)?;
+    let action = match action {
+        "invite" | "accept" | "pass" | "catch" | "shoot" | "cheer" => "greet",
+        "take" | "pickup" | "return" => "store",
+        "carry" | "bounce" => "carry",
+        "rest" => "rest",
+        "wait" | "decline" | "miss" => "idle",
+        _ => return None,
+    };
+    Some((action, phase))
 }
 
 #[derive(Clone, Copy)]

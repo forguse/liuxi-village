@@ -2086,7 +2086,7 @@ impl LivingView {
                 }
                 Visible::Legacy(Drawable::Plugin(command)) => {
                     if let Some(store) = store {
-                        self.plugin(command, cx, cy, store);
+                        self.plugin(command, cx, cy, store, world);
                     }
                 }
                 Visible::Legacy(Drawable::InstalledFixture(status, p)) => {

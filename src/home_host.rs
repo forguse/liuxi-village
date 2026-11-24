@@ -629,7 +629,10 @@ impl HomeHost {
                 self.village_camera
                     .retain_awake_physical(&mut self.camera, &self.world, physical);
             }
-            let commands = self.scenes.visuals(&self.store, &self.world);
+            let commands = self.scenes.visuals_with_actor_hands(
+                &self.store, &self.world,
+                |kind, frame| self.view.plugin_actor_hand(&self.world, kind, frame),
+            );
             let map = self.world.map_extent();
             let origin = cat_home::viewport::PixelOrigin::new(
                 (self.camera.x, self.camera.y),

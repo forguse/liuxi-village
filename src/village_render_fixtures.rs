@@ -4,6 +4,61 @@ use std::io::{BufWriter, Write};
 
 const SIZE: (i32, i32) = (1320, 860);
 
+#[test]
+fn basketball_keeps_both_protagonists_at_their_normal_size_and_animated() {
+    let (store, pack) = crate::plugin_scene::tests::test_store();
+    let mut world = LivingWorld::new_village_wall_ms(0);
+    let mut view = LivingView::new();
+    view.enable_builtin_premium().unwrap();
+    view.width = 128;
+    view.height = 128;
+    view.density = 2;
+    view.pixels.resize(128 * 128 * 4, 0);
+    let feet = Point { x: 32.0, y: 52.0 };
+    for kind in [ActorKind::Xiaohe, ActorKind::Ayu] {
+        world.test_camera_actor(kind, feet, Pose::Carry, false);
+        let suffix = if kind == ActorKind::Ayu { "_alt" } else { "" };
+        let role = if kind == ActorKind::Xiaohe { "female" } else { "male" };
+        let mut walking = Vec::new();
+        for action in ["invite", "accept", "decline", "take", "carry", "bounce", "wait",
+            "pass", "catch", "shoot", "pickup", "cheer", "miss", "return", "rest"]
+        {
+            for phase in 0..3 {
+                let command = FrameCommand {
+                    pack_id: pack.clone(),
+                    frame_id: format!("{action}_{phase}{suffix}").parse().unwrap(),
+                    point: feet, depth: feet.y as i32, actor_override: Some(kind), flip: false,
+                };
+                view.pixels.fill(0);
+                view.plugin(&command, 0, 0, &store, &world);
+                let rows: Vec<_> = view.pixels.chunks_exact(128 * 4).enumerate()
+                    .filter(|(_, row)| row.chunks_exact(4).any(|pixel| pixel[3] > 100))
+                    .map(|(row, _)| row).collect();
+                assert!(rows.len() > 14 && rows.len() <= 33,
+                    "{role} {action} {phase} changed height: {}", rows.len());
+                if action == "carry" {
+                    walking.push(view.pixels.clone());
+                    if let Some(path) = std::env::var_os("CAT_HOME_PLUGIN_ACTOR_PROOF_DIR") {
+                        let path = std::path::Path::new(&path);
+                        std::fs::create_dir_all(path).unwrap();
+                        let mut out = BufWriter::new(std::fs::File::create(
+                            path.join(format!("{role}-{phase}.pam"))).unwrap());
+                        writeln!(out, "P7\nWIDTH 128\nHEIGHT 128\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR").unwrap();
+                        for pixel in view.pixels.chunks_exact(4) {
+                            out.write_all(&[pixel[2], pixel[1], pixel[0], pixel[3]]).unwrap();
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(view.cache_bytes(), 0, "Actor rendering decoded obsolete plugin body pages");
+        let head_end = (feet.y as usize * 2 - 17) * 128 * 4;
+        assert_eq!(walking[0][..head_end], walking[1][..head_end]);
+        assert_eq!(walking[1][..head_end], walking[2][..head_end]);
+        assert_ne!(walking[0][head_end..], walking[1][head_end..]);
+    }
+}
+
 fn frame(
     world: &LivingWorld,
     focus: Point,

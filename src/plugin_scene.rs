@@ -1488,6 +1488,15 @@ impl SceneRuntime {
     }
 
     pub fn visuals(&self, store: &PluginStore, world: &LivingWorld) -> Vec<FrameCommand> {
+        self.visuals_with_actor_hands(store, world, |_, _| None)
+    }
+
+    pub fn visuals_with_actor_hands(
+        &self,
+        store: &PluginStore,
+        world: &LivingWorld,
+        actor_hand: impl Fn(ActorKind, Option<&LocalId>) -> Option<Point>,
+    ) -> Vec<FrameCommand> {
         let mut commands = Vec::new();
         for facility in &self.state.built {
             let Some(pack_id) = PackId::parse(facility.id.namespace()).ok() else {
@@ -1522,7 +1531,7 @@ impl SceneRuntime {
                 ));
             }
         }
-        let mut anchors = [None; 2];
+        let mut anchors = HUMANS.map(|kind| actor_hand(kind, None));
         if let Some(active) = &self.active
             && let Some(record) = store.package(&active.pack)
             && let Some(step) = record
@@ -1534,6 +1543,14 @@ impl SceneRuntime {
             && !active.stopping
         {
             for kind in active.actors(step.actor) {
+                // Travel uses the host's continuous walking animation, including waits
+                // and long journeys that outlast a scene's short gesture clip.
+                if world.is_village()
+                    && (matches!(active.phase, Phase::Moving { .. })
+                        || actor(world, kind).walking_segment().is_some())
+                {
+                    continue;
+                }
                 let clip = if kind == ActorKind::Ayu && !step.alternate_frames.is_empty() {
                     &step.alternate_frames
                 } else {
@@ -1551,7 +1568,11 @@ impl SceneRuntime {
                 let mut overlay = command(&active.pack, frame, position, position.y as i32);
                 overlay.actor_override = Some(kind);
                 overlay.flip = flip;
-                if let Some(frame) = record.pack.frame(frame)
+                if world.is_village() && active.pack.as_str() == BASKETBALL_PACK
+                    && let Some(hand) = actor_hand(kind, Some(frame))
+                {
+                    anchors[kind as usize] = Some(hand);
+                } else if let Some(frame) = record.pack.frame(frame)
                     && let Some(hand) = frame.hand_anchor
                 {
                     let x = f32::from(hand[0]) - f32::from(frame.anchor[0]);
@@ -1835,7 +1856,7 @@ fn command(pack: &PackId, frame: &LocalId, point: Point, depth: i32) -> FrameCom
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::plugins::HostConfig;
     use crate::visitors::VisitorState;
@@ -1846,7 +1867,7 @@ mod tests {
 
     static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
-    fn test_store() -> (PluginStore, PackId) {
+    pub(crate) fn test_store() -> (PluginStore, PackId) {
         let host = HostConfig {
             capabilities: [
                 SceneOp::PrepareFacility,
@@ -1898,6 +1919,55 @@ mod tests {
             "world failed to advance: {now} -> {target}, scene {:?}",
             scenes.active
         );
+    }
+
+    #[test]
+    fn long_plugin_journeys_use_host_walking_and_the_actual_holding_hand() {
+        let (store, pack) = test_store();
+        let mut world = LivingWorld::new_village_wall_ms(0);
+        assert!(world.reserve_activity(&HUMANS));
+        world.advance_world_ms(120_000);
+        let start = world.actors()[0].position;
+        let target = (12..40).flat_map(|y| (14..40).map(move |x| (x, y)))
+            .map(|(x, y)| Point::at_tile(x, y))
+            .find(|&p| (p.x - start.x).abs() + (p.y - start.y).abs() >= 80.0
+                && world.can_reach_for_activity(ActorKind::Xiaohe, p))
+            .unwrap();
+        assert!(world.move_for_activity_with_load(ActorKind::Xiaohe, target, true));
+        let ball = ContentId::parse("org.cat-home.community.basketball:ball").unwrap();
+        let mut scenes = SceneRuntime::default();
+        scenes.state.owned.push(OwnedProp { id: ball.clone(), ground: Cell::at(start).unwrap() });
+        scenes.active = Some(Active {
+            pack: pack.clone(),
+            activity: ContentId::parse("org.cat-home.community.basketball:friendly_game").unwrap(),
+            step: "walk_a".parse().unwrap(), team: HUMANS.to_vec(), focus: ActorKind::Xiaohe,
+            facility: None, prop: Some(ball), possession: Possession::Held(ActorKind::Xiaohe),
+            deadline: world.world_ms() + DAY_MS, step_started: world.world_ms() - 120_000,
+            phase: Phase::Moving { kinds: vec![ActorKind::Xiaohe], target, preparation: None },
+            repeats: 0, stopping: false, declined: false, contacts: 0, effort: 0,
+        });
+        let view = {
+            let mut view = crate::living_view::LivingView::new();
+            view.enable_builtin_premium().unwrap();
+            // The public renderer initializes the art density used by the hand anchors.
+            view.render_village(&world, &crate::living_view::Camera::default(),
+                (480, 300), &[], None, &[], &[], &[]);
+            view
+        };
+        let mut positions = Vec::new();
+        let mut walking_samples = 0;
+        for _ in 0..18 {
+            let commands = scenes.visuals_with_actor_hands(&store, &world,
+                |kind, frame| view.plugin_actor_hand(&world, kind, frame));
+            walking_samples += usize::from(world.actors()[0].walking_segment().is_some());
+            assert!(commands.iter().all(|command| command.actor_override.is_none()));
+            let held = commands.iter().find(|command| command.frame_id.as_str() == "ball_0").unwrap();
+            assert_eq!(held.point, view.plugin_actor_hand(&world, ActorKind::Xiaohe, None).unwrap());
+            positions.push(world.actors()[0].position);
+            world.advance_world_ms(8_000);
+        }
+        assert!(walking_samples > 3);
+        assert!(positions.windows(2).any(|pair| pair[0] != pair[1]));
     }
 
     #[test]
