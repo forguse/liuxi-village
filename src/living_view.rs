@@ -2527,7 +2527,14 @@ impl LivingView {
             }
         }
         let position = (c.point.x.round() as i32 - cx, c.point.y.round() as i32 - cy);
-        let sprite = Sprite::new(frame.rect, frame.anchor, position, c.flip, Scale::IDENTITY)
+        let scale = if world.is_village() && c.pack_id.as_str() == "org.cat-home.community.basketball"
+            && matches!(c.frame_id.as_str(), "ball_0" | "ball_1" | "ball_2" | "cup")
+        {
+            Scale::new(1, 3)
+        } else {
+            Scale::IDENTITY
+        };
+        let sprite = Sprite::new(frame.rect, frame.anchor, position, c.flip, scale)
             .at_density(self.density);
         if !sprite.visible((self.width, self.height)) {
             return;

@@ -1611,7 +1611,13 @@ impl SceneRuntime {
                         let mut hand = hand_point(world, &anchors, bounce.holder);
                         let progress = elapsed_fraction(world.world_ms(), bounce.start, bounce.end);
                         let cycle = (progress * 2.0).fract();
-                        hand.y += f32::from(bounce.depth) * (1.0 - (1.0 - 2.0 * cycle).abs());
+                        let depth = if world.is_village() && active.pack.as_str() == BASKETBALL_PACK {
+                            let floor = actor_position(world, bounce.holder).y - 1.5;
+                            f32::from(bounce.depth).min((floor - hand.y).max(0.0))
+                        } else {
+                            f32::from(bounce.depth)
+                        };
+                        hand.y += depth * (1.0 - (1.0 - 2.0 * cycle).abs());
                         (hand, actor_position(world, bounce.holder).y as i32 + 1)
                     }
                     Possession::Flight(flight) => (
@@ -1968,6 +1974,27 @@ pub(crate) mod tests {
         }
         assert!(walking_samples > 3);
         assert!(positions.windows(2).any(|pair| pair[0] != pair[1]));
+
+        for _ in 0..200 {
+            if world.activity_arrived(ActorKind::Xiaohe) {
+                break;
+            }
+            world.advance_world_ms(8_000);
+        }
+        assert!(world.activity_arrived(ActorKind::Xiaohe));
+        let now = world.world_ms();
+        let active = scenes.active.as_mut().unwrap();
+        active.step = "dribble".parse().unwrap();
+        active.step_started = now - 8_500;
+        active.phase = Phase::Timed { until: now + 25_500, preparation: None };
+        active.possession = Possession::Bounce(Bounce {
+            holder: ActorKind::Xiaohe, start: now - 8_500, end: now + 25_500, depth: 14,
+        });
+        let commands = scenes.visuals_with_actor_hands(&store, &world,
+            |kind, frame| view.plugin_actor_hand(&world, kind, frame));
+        let ball = commands.iter().find(|c| c.frame_id.as_str() == "ball_0").unwrap();
+        assert!((ball.point.y + 1.5 - world.actors()[0].position.y).abs() < 0.01,
+            "The ball should touch the ground at the bottom of its bounce");
     }
 
     #[test]

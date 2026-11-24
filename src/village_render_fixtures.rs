@@ -57,6 +57,14 @@ fn basketball_keeps_both_protagonists_at_their_normal_size_and_animated() {
         assert_eq!(walking[1][..head_end], walking[2][..head_end]);
         assert_ne!(walking[0][head_end..], walking[1][head_end..]);
     }
+    view.pixels.fill(0);
+    view.plugin(&FrameCommand {
+        pack_id: pack, frame_id: "ball_0".parse().unwrap(),
+        point: feet, depth: feet.y as i32, actor_override: None, flip: false,
+    }, 0, 0, &store, &world);
+    let ball_height = view.pixels.chunks_exact(128 * 4)
+        .filter(|row| row.chunks_exact(4).any(|pixel| pixel[3] > 100)).count();
+    assert!((3..=8).contains(&ball_height), "Basketball is too large for the protagonist");
 }
 
 fn frame(
